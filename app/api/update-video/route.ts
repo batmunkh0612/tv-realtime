@@ -4,7 +4,6 @@ import { getDatabase } from 'firebase-admin/database';
 
 export async function POST(request: NextRequest) {
     try {
-        // Initialize Firebase Admin
         getFirebaseAdminApp();
 
         const body = await request.json();
@@ -18,11 +17,9 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'No videoUrl or queue provided' }, { status: 400 });
         }
 
-        // Update Firebase Realtime Database
         const db = getDatabase();
         const userRef = db.ref(`users/${userId}`);
 
-        // Get existing user data to preserve name
         const existingUserSnapshot = await userRef.once('value');
         let userName = userId;
         if (existingUserSnapshot.exists()) {

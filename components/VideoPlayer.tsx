@@ -4,30 +4,41 @@ import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import YouTube, { YouTubeProps, YouTubePlayer } from 'react-youtube';
 import { Skeleton } from '@/components/ui/skeleton';
 
-// Helper to extract ID from various YouTube URL formats
 const getYouTubeId = (url: string) => {
-    if (!url) return null;
-    // Handle standard database loops where we might just have the ID
+    if (!url) {
+        console.log('⚠️ getYouTubeId: Empty URL');
+        return null;
+    }
+    
     if (/^[a-zA-Z0-9_-]{11}$/.test(url)) {
+        console.log('✅ getYouTubeId: Direct ID format:', url);
         return url;
     }
+    
     try {
         const urlObj = new URL(url);
         if (urlObj.hostname.includes('youtube.com')) {
-            return urlObj.searchParams.get('v');
+            const videoId = urlObj.searchParams.get('v');
+            console.log('✅ getYouTubeId: Extracted from youtube.com:', videoId, 'from', url);
+            return videoId;
         } else if (urlObj.hostname.includes('youtu.be')) {
-            return urlObj.pathname.slice(1);
+            const videoId = urlObj.pathname.slice(1);
+            console.log('✅ getYouTubeId: Extracted from youtu.be:', videoId, 'from', url);
+            return videoId;
         }
-    } catch {
+    } catch (error) {
+        console.log('❌ getYouTubeId: Failed to parse URL:', url, error);
         return null;
     }
+    
+    console.log('⚠️ getYouTubeId: Unknown format:', url);
     return null;
 };
 
 interface VideoPlayerProps {
     isLoading: boolean;
-    videoUrl?: string; // Legacy support
-    queue?: string[]; // New queue support
+    videoUrl?: string;
+    queue?: string[];
 }
 
 export const VideoPlayer = ({ isLoading, videoUrl, queue = [] }: VideoPlayerProps) => {
@@ -35,7 +46,6 @@ export const VideoPlayer = ({ isLoading, videoUrl, queue = [] }: VideoPlayerProp
     const [hasUserInteracted, setHasUserInteracted] = useState(false);
     const playerRef = useRef<YouTubePlayer | null>(null);
 
-    // Compute playlist from queue or videoUrl (derived state)
     const playlist = useMemo(() => {
         let rawQueue: string[] = [];
         if (queue && queue.length > 0) {
@@ -44,13 +54,14 @@ export const VideoPlayer = ({ isLoading, videoUrl, queue = [] }: VideoPlayerProp
             rawQueue = [videoUrl];
         }
 
-        return rawQueue
+        const result = rawQueue
             .map(url => getYouTubeId(url))
             .filter((id): id is string => !!id);
+        
+        console.log('🔄 VideoPlayer: Playlist computed:', result);
+        return result;
     }, [queue, videoUrl]);
 
-    // Compute current video ID from playlist and index (derived state)
-    // Clamp index to valid range
     const validIndex = useMemo(() => {
         if (playlist.length === 0) return 0;
         return currentIndex >= playlist.length ? 0 : currentIndex;
@@ -58,42 +69,66 @@ export const VideoPlayer = ({ isLoading, videoUrl, queue = [] }: VideoPlayerProp
 
     const currentVideoId = useMemo(() => {
         if (playlist.length === 0) return null;
-        return playlist[validIndex] || null;
+        const videoId = playlist[validIndex] || null;
+        console.log('🎬 VideoPlayer: Current video ID updated to:', videoId);
+        console.log('   Playlist:', playlist);
+        console.log('   Valid index:', validIndex);
+        return videoId;
     }, [playlist, validIndex]);
 
     const onPlayerReady: YouTubeProps['onReady'] = (event) => {
+        console.log('🎮 YouTube Player Ready - Video ID:', currentVideoId);
         playerRef.current = event.target;
-        event.target.playVideo();
         
-        // If user has already interacted, unmute immediately for subsequent videos
-        if (hasUserInteracted) {
+        try {
+            const availableQualities = event.target.getAvailableQualityLevels();
+            console.log('Available qualities:', availableQualities);
+            
+            if (availableQualities.length > 0) {
+                event.target.setPlaybackQuality(availableQualities[0]);
+                console.log('✅ Set quality to:', availableQualities[0]);
+            }
+        } catch (error) {
+            console.log('Could not set quality:', error);
+        }
+        
+        try {
             event.target.unMute();
             event.target.setVolume(100);
+            
+            setTimeout(() => {
+                if (event.target && !event.target.isMuted()) {
+                    setHasUserInteracted(true);
+                    console.log('✅ Audio auto-enabled successfully');
+                } else {
+                    console.log('⚠️ Auto-unmute blocked by browser, waiting for user interaction');
+                }
+            }, 500);
+        } catch (error) {
+            console.log('Auto-unmute blocked, waiting for user interaction', error);
         }
+        
+        console.log('▶️ Starting playback');
+        event.target.playVideo();
     };
 
     const handleVideoEnd = useCallback(() => {
         if (playlist.length === 0) return;
 
-        // Move to next index (currentVideoId will update automatically via useMemo)
         setCurrentIndex((prevIndex) => (prevIndex + 1) % playlist.length);
     }, [playlist.length]);
 
     const onPlayerStateChange: YouTubeProps['onStateChange'] = () => {
-        // Optional: handle buffering etc
     };
 
-    // Unmute logic - track user interaction for subsequent videos
     useEffect(() => {
         const handleInteraction = () => {
             setHasUserInteracted(true);
             if (playerRef.current) {
-                // Force unmute regardless of muted state
                 playerRef.current.unMute();
                 playerRef.current.setVolume(100);
-                // Ensure playback continues
                 const playerState = playerRef.current.getPlayerState();
-                if (playerState !== 1) { // Not playing
+                if (playerState !== 1) {
                     playerRef.current.playVideo();
                 }
             }
@@ -106,40 +141,107 @@ export const VideoPlayer = ({ isLoading, videoUrl, queue = [] }: VideoPlayerProp
         };
     }, []);
 
-    // Keyboard controls
     useEffect(() => {
         const handleKeyPress = (e: KeyboardEvent) => {
-            if (!playerRef.current) return;
+            console.log('🎮 VideoPlayer Key event:', {
+                key: e.key,
+                code: e.code,
+                keyCode: e.keyCode,
+                which: e.which
+            });
             
-            // Ensure unmute on any keyboard interaction
-            if (!hasUserInteracted && playerRef.current.isMuted()) {
-                setHasUserInteracted(true);
-                playerRef.current.unMute();
-                playerRef.current.setVolume(100);
+            if (!playerRef.current) {
+                console.log('⚠️ Player not ready');
+                return;
             }
             
-            switch (e.key) {
-                case 'Enter':
-                case ' ':
-                    const playerState = playerRef.current.getPlayerState();
-                    if (playerState === 1) playerRef.current.pauseVideo();
-                    else playerRef.current.playVideo();
-                    e.preventDefault();
-                    break;
-                case 'ArrowLeft':
-                    playerRef.current.seekTo(playerRef.current.getCurrentTime() - 10, true);
-                    e.preventDefault();
-                    break;
-                case 'ArrowRight':
-                    playerRef.current.seekTo(playerRef.current.getCurrentTime() + 10, true);
-                    e.preventDefault();
-                    break;
-                // Add Next/Prev track controls? 
-                case 'n': // Next
-                    handleVideoEnd();
-                    break;
+            if (!hasUserInteracted) {
+                console.log('🔊 First interaction - attempting to unmute');
+                if (playerRef.current.isMuted()) {
+                    playerRef.current.unMute();
+                    playerRef.current.setVolume(100);
+                }
+                setHasUserInteracted(true);
+            }
+            
+            const key = e.key;
+            const keyCode = e.keyCode;
+            
+            if (
+                key === 'Enter' || 
+                key === ' ' || 
+                key === 'MediaPlayPause' || 
+                key === 'Play' || 
+                key === 'Pause' ||
+                keyCode === 13 ||
+                keyCode === 32 ||
+                keyCode === 415 ||
+                keyCode === 19 ||
+                keyCode === 10252
+            ) {
+                console.log('▶️ Play/Pause triggered');
+                const playerState = playerRef.current.getPlayerState();
+                if (playerState === 1) playerRef.current.pauseVideo();
+                else playerRef.current.playVideo();
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            
+            if (
+                key === 'ArrowLeft' || 
+                key === 'MediaRewind' || 
+                key === 'Rewind' ||
+                keyCode === 37 ||
+                keyCode === 412
+            ) {
+                console.log('⏪ Rewind/Left triggered');
+                playerRef.current.seekTo(playerRef.current.getCurrentTime() - 10, true);
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            
+            if (
+                key === 'ArrowRight' || 
+                key === 'MediaFastForward' || 
+                key === 'FastForward' ||
+                keyCode === 39 ||
+                keyCode === 417
+            ) {
+                console.log('⏩ FastForward/Right triggered');
+                playerRef.current.seekTo(playerRef.current.getCurrentTime() + 10, true);
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            
+            if (
+                key === 'n' || 
+                key === 'N' ||
+                key === 'MediaTrackNext' || 
+                key === 'NextTrack' ||
+                keyCode === 78 ||
+                keyCode === 176
+            ) {
+                console.log('⏭️ Next video triggered');
+                handleVideoEnd();
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            
+            if (key === 'ArrowUp' || keyCode === 38) {
+                console.log('⬆️ Up arrow - passing through for menu');
+                return;
+            }
+            
+            if (key === 'ArrowDown' || keyCode === 40) {
+                console.log('⬇️ Down arrow - passing through for menu');
+                return;
             }
         };
+        
         window.addEventListener('keydown', handleKeyPress);
         return () => window.removeEventListener('keydown', handleKeyPress);
     }, [handleVideoEnd, hasUserInteracted]);
@@ -158,10 +260,10 @@ export const VideoPlayer = ({ isLoading, videoUrl, queue = [] }: VideoPlayerProp
             fs: 0,
             disablekb: 1,
             playsinline: 1,
-            // distinct from loop=1 because that loops the single video. 
-            // We want to handle looping manually by changing the video ID.
             loop: 0,
             origin: typeof window !== 'undefined' ? window.location.origin : undefined,
+            vq: 'hd1080',
+            hd: 1,
         },
     };
 
@@ -174,15 +276,16 @@ export const VideoPlayer = ({ isLoading, videoUrl, queue = [] }: VideoPlayerProp
     }
 
     if (currentVideoId) {
+        console.log('🎯 VideoPlayer: Rendering with video ID:', currentVideoId);
         return (
             <div className="relative w-full h-full overflow-hidden bg-black">
                 <YouTube
-                    key={currentVideoId} // Key is crucial to force re-render/reload explicitly when video changes
+                    key={currentVideoId}
                     videoId={currentVideoId}
                     opts={opts}
                     onReady={onPlayerReady}
                     onStateChange={onPlayerStateChange}
-                    onEnd={handleVideoEnd} // Trigger next video
+                    onEnd={handleVideoEnd}
                     className="absolute"
                     style={{
                         width: '100%',
@@ -190,19 +293,9 @@ export const VideoPlayer = ({ isLoading, videoUrl, queue = [] }: VideoPlayerProp
                         top: '-60px',
                     }}
                 />
-                
-                {/* Audio Enable Prompt - Shows until user interacts */}
-                {!hasUserInteracted && (
-                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
-                        <div className="bg-black/80 backdrop-blur-sm text-white px-8 py-6 rounded-2xl border-2 border-white/30 shadow-2xl animate-pulse">
-                            <div className="text-center">
-                                <div className="text-4xl mb-3">🔇</div>
-                                <div className="text-xl font-bold mb-2">Click or Press Any Key</div>
-                                <div className="text-sm text-white/80">to Enable Audio</div>
-                            </div>
-                        </div>
-                    </div>
-                )}
+                <div className="absolute bottom-4 right-4 bg-black/80 text-white px-3 py-2 rounded text-xs font-mono">
+                    Playing: {currentVideoId}
+                </div>
             </div>
         );
     }

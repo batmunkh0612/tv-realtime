@@ -1,121 +1,166 @@
 "use client";
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import YouTube, { YouTubeProps, YouTubePlayer } from 'react-youtube';
 import { Skeleton } from '@/components/ui/skeleton';
 
+// Helper to extract ID from various YouTube URL formats
+const getYouTubeId = (url: string) => {
+    if (!url) return null;
+    // Handle standard database loops where we might just have the ID
+    if (/^[a-zA-Z0-9_-]{11}$/.test(url)) {
+        return url;
+    }
+    try {
+        const urlObj = new URL(url);
+        if (urlObj.hostname.includes('youtube.com')) {
+            return urlObj.searchParams.get('v');
+        } else if (urlObj.hostname.includes('youtu.be')) {
+            return urlObj.pathname.slice(1);
+        }
+    } catch {
+        return null;
+    }
+    return null;
+};
+
 interface VideoPlayerProps {
     isLoading: boolean;
-    videoUrl?: string; // Expecting a YouTube URL or ID
+    videoUrl?: string; // Legacy support
+    queue?: string[]; // New queue support
 }
 
-export const VideoPlayer = ({ isLoading, videoUrl }: VideoPlayerProps) => {
-    const [videoId, setVideoId] = useState<string | null>(null);
+export const VideoPlayer = ({ isLoading, videoUrl, queue = [] }: VideoPlayerProps) => {
+    const [currentIndex, setCurrentIndex] = useState(0);
+    const [hasUserInteracted, setHasUserInteracted] = useState(false);
     const playerRef = useRef<YouTubePlayer | null>(null);
 
-    const getYouTubeId = (url: string) => {
-        if (!url) return null;
-        if (/^[a-zA-Z0-9_-]{11}$/.test(url)) {
-            return url;
+    // Compute playlist from queue or videoUrl (derived state)
+    const playlist = useMemo(() => {
+        let rawQueue: string[] = [];
+        if (queue && queue.length > 0) {
+            rawQueue = queue;
+        } else if (videoUrl) {
+            rawQueue = [videoUrl];
         }
-        try {
-            const urlObj = new URL(url);
-            if (urlObj.hostname.includes('youtube.com')) {
-                return urlObj.searchParams.get('v');
-            } else if (urlObj.hostname.includes('youtu.be')) {
-                return urlObj.pathname.slice(1);
-            }
-        } catch {
-            return null;
-        }
-        return null;
-    };
 
-    useEffect(() => {
-        if (videoUrl) {
-            const id = getYouTubeId(videoUrl);
-            setVideoId(id);
-        }
-    }, [videoUrl]);
+        return rawQueue
+            .map(url => getYouTubeId(url))
+            .filter((id): id is string => !!id);
+    }, [queue, videoUrl]);
+
+    // Compute current video ID from playlist and index (derived state)
+    // Clamp index to valid range
+    const validIndex = useMemo(() => {
+        if (playlist.length === 0) return 0;
+        return currentIndex >= playlist.length ? 0 : currentIndex;
+    }, [playlist.length, currentIndex]);
+
+    const currentVideoId = useMemo(() => {
+        if (playlist.length === 0) return null;
+        return playlist[validIndex] || null;
+    }, [playlist, validIndex]);
 
     const onPlayerReady: YouTubeProps['onReady'] = (event) => {
         playerRef.current = event.target;
-        // Autoplay is handled by playerVars, but this is a good fallback.
         event.target.playVideo();
+        
+        // If user has already interacted, unmute immediately for subsequent videos
+        if (hasUserInteracted) {
+            event.target.unMute();
+            event.target.setVolume(100);
+        }
     };
 
-    const onPlayerStateChange: YouTubeProps['onStateChange'] = (event) => {
-        // You can add logic here if needed, for example, to track the player state.
-        // For simple autoplay and looping, it's not strictly necessary.
+    const handleVideoEnd = useCallback(() => {
+        if (playlist.length === 0) return;
+
+        // Move to next index (currentVideoId will update automatically via useMemo)
+        setCurrentIndex((prevIndex) => (prevIndex + 1) % playlist.length);
+    }, [playlist.length]);
+
+    const onPlayerStateChange: YouTubeProps['onStateChange'] = () => {
+        // Optional: handle buffering etc
     };
 
-    // Unmute the player on the first user interaction (click or keypress)
+    // Unmute logic - track user interaction for subsequent videos
     useEffect(() => {
         const handleInteraction = () => {
-            if (playerRef.current && playerRef.current.isMuted()) {
+            setHasUserInteracted(true);
+            if (playerRef.current) {
+                // Force unmute regardless of muted state
                 playerRef.current.unMute();
                 playerRef.current.setVolume(100);
+                // Ensure playback continues
+                const playerState = playerRef.current.getPlayerState();
+                if (playerState !== 1) { // Not playing
+                    playerRef.current.playVideo();
+                }
             }
         };
-
-        // The { once: true } option automatically removes the listener after it runs
         window.addEventListener('click', handleInteraction, { once: true });
         window.addEventListener('keydown', handleInteraction, { once: true });
-
         return () => {
             window.removeEventListener('click', handleInteraction);
             window.removeEventListener('keydown', handleInteraction);
         };
     }, []);
 
-    // Handle keyboard controls for play/pause and seeking
+    // Keyboard controls
     useEffect(() => {
         const handleKeyPress = (e: KeyboardEvent) => {
             if (!playerRef.current) return;
+            
+            // Ensure unmute on any keyboard interaction
+            if (!hasUserInteracted && playerRef.current.isMuted()) {
+                setHasUserInteracted(true);
+                playerRef.current.unMute();
+                playerRef.current.setVolume(100);
+            }
+            
             switch (e.key) {
                 case 'Enter':
                 case ' ':
                     const playerState = playerRef.current.getPlayerState();
-                    if (playerState === 1) { // Playing
-                        playerRef.current.pauseVideo();
-                    } else {
-                        playerRef.current.playVideo();
-                    }
+                    if (playerState === 1) playerRef.current.pauseVideo();
+                    else playerRef.current.playVideo();
                     e.preventDefault();
                     break;
                 case 'ArrowLeft':
-                    const currentTime = playerRef.current.getCurrentTime();
-                    playerRef.current.seekTo(currentTime - 10, true);
+                    playerRef.current.seekTo(playerRef.current.getCurrentTime() - 10, true);
                     e.preventDefault();
                     break;
                 case 'ArrowRight':
-                    const currentTimeRight = playerRef.current.getCurrentTime();
-                    playerRef.current.seekTo(currentTimeRight + 10, true);
+                    playerRef.current.seekTo(playerRef.current.getCurrentTime() + 10, true);
                     e.preventDefault();
+                    break;
+                // Add Next/Prev track controls? 
+                case 'n': // Next
+                    handleVideoEnd();
                     break;
             }
         };
         window.addEventListener('keydown', handleKeyPress);
         return () => window.removeEventListener('keydown', handleKeyPress);
-    }, []);
+    }, [handleVideoEnd, hasUserInteracted]);
 
     const opts: YouTubeProps['opts'] = {
         height: '100%',
         width: '100%',
         playerVars: {
-            autoplay: 1,        // Tell the player to autoplay
-            mute: 1,            // Mute is required for autoplay in most browsers
-            controls: 0,        // Hide all player controls
-            showinfo: 0,        // Hide video title and uploader (deprecated but good to have)
-            modestbranding: 1,  // Hide YouTube logo
-            rel: 0,             // Do not show related videos
-            iv_load_policy: 3,  // Do not show video annotations
-            fs: 0,              // Hide fullscreen button
-            disablekb: 1,       // Disable player keyboard controls (we handle our own)
+            autoplay: 1,
+            mute: 1,
+            controls: 0,
+            showinfo: 0,
+            modestbranding: 1,
+            rel: 0,
+            iv_load_policy: 3,
+            fs: 0,
+            disablekb: 1,
             playsinline: 1,
-            loop: 1,            // Loop the video
-            // The 'playlist' parameter is required for 'loop' to work on a single video
-            playlist: videoId || undefined,
+            // distinct from loop=1 because that loops the single video. 
+            // We want to handle looping manually by changing the video ID.
+            loop: 0,
             origin: typeof window !== 'undefined' ? window.location.origin : undefined,
         },
     };
@@ -128,32 +173,43 @@ export const VideoPlayer = ({ isLoading, videoUrl }: VideoPlayerProps) => {
         );
     }
 
-    if (videoId) {
+    if (currentVideoId) {
         return (
-            // This container uses CSS to hide the top bar of the YouTube player
             <div className="relative w-full h-full overflow-hidden bg-black">
                 <YouTube
-                    videoId={videoId}
+                    key={currentVideoId} // Key is crucial to force re-render/reload explicitly when video changes
+                    videoId={currentVideoId}
                     opts={opts}
                     onReady={onPlayerReady}
                     onStateChange={onPlayerStateChange}
-                    onEnd={(e) => e.target.playVideo()}
+                    onEnd={handleVideoEnd} // Trigger next video
                     className="absolute"
                     style={{
                         width: '100%',
-                        // Make the iframe taller than the container
                         height: 'calc(100% + 120px)',
-                        // Shift it up to hide the top part
                         top: '-60px',
                     }}
                 />
+                
+                {/* Audio Enable Prompt - Shows until user interacts */}
+                {!hasUserInteracted && (
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
+                        <div className="bg-black/80 backdrop-blur-sm text-white px-8 py-6 rounded-2xl border-2 border-white/30 shadow-2xl animate-pulse">
+                            <div className="text-center">
+                                <div className="text-4xl mb-3">🔇</div>
+                                <div className="text-xl font-bold mb-2">Click or Press Any Key</div>
+                                <div className="text-sm text-white/80">to Enable Audio</div>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         );
     }
 
     return (
         <div className="w-full h-full flex items-center justify-center bg-black">
-            <p className="text-white text-xl">Video not available.</p>
+            <p className="text-white text-xl">No videos in queue.</p>
         </div>
     );
 };

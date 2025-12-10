@@ -8,14 +8,14 @@ export async function POST(request: NextRequest) {
         getFirebaseAdminApp();
 
         const body = await request.json();
-        const { userId, videoUrl, message } = body;
+        const { userId, videoUrl, queue, message } = body;
 
         if (!userId) {
             return NextResponse.json({ error: 'No userId provided' }, { status: 400 });
         }
 
-        if (!videoUrl) {
-            return NextResponse.json({ error: 'No videoUrl provided' }, { status: 400 });
+        if (!videoUrl && (!queue || queue.length === 0)) {
+            return NextResponse.json({ error: 'No videoUrl or queue provided' }, { status: 400 });
         }
 
         // Update Firebase Realtime Database
@@ -33,10 +33,12 @@ export async function POST(request: NextRequest) {
         const userData: {
             name: string;
             videoUrl: string;
+            queue?: string[];
             message?: string;
         } = {
             name: userName,
-            videoUrl: videoUrl,
+            videoUrl: videoUrl || (queue && queue.length > 0 ? queue[0] : ''),
+            ...(queue && { queue }),
             ...(message && { message }),
         };
 

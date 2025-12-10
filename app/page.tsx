@@ -10,6 +10,7 @@ import { VideoPlayer } from '@/components/VideoPlayer';
 interface UserData {
   name: string;
   videoUrl: string;
+  queue?: string[];
   message?: string;
 }
 
@@ -135,7 +136,11 @@ function HomeContent() {
 
   return (
     <main className="fixed inset-0 w-full h-full bg-black overflow-hidden">
-      <VideoPlayer isLoading={isLoading} videoUrl={userData?.videoUrl} />
+      <VideoPlayer
+        isLoading={isLoading}
+        videoUrl={userData?.videoUrl}
+        queue={userData?.queue}
+      />
 
       {/* Video Switcher Menu */}
       {showMenu && userIds.length > 0 && (

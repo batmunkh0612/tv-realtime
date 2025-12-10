@@ -6,13 +6,42 @@ import { database } from '@/lib/firebase';
 import { ref as dbRef, get } from 'firebase/database';
 import { Skeleton } from '@/components/ui/skeleton';
 
+// Helper to extract ID from various YouTube URL formats
+const getYouTubeId = (url: string) => {
+  if (!url) return null;
+  // Handle standard database loops where we might just have the ID
+  if (/^[a-zA-Z0-9_-]{11}$/.test(url)) {
+    return url;
+  }
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.hostname.includes('youtube.com')) {
+      return urlObj.searchParams.get('v');
+    } else if (urlObj.hostname.includes('youtu.be')) {
+      return urlObj.pathname.slice(1);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
+interface UserData {
+  name?: string;
+  videoUrl?: string;
+  queue?: string[];
+  message?: string;
+}
+
 export default function UploadPage() {
   const router = useRouter();
-  const [videoUrl, setVideoUrl] = useState<string>('');
+  const [newVideoUrl, setNewVideoUrl] = useState<string>('');
   const [userId, setUserId] = useState<string>('user1');
   const [message, setMessage] = useState<string>('');
+  const [queue, setQueue] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(true);
+  const [isLoadingUserData, setIsLoadingUserData] = useState<boolean>(false);
   const [availableUsers, setAvailableUsers] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -36,11 +65,78 @@ export default function UploadPage() {
       });
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Load user data (queue and message) when userId changes
+  useEffect(() => {
+    if (!userId) return;
 
-    if (!videoUrl) {
+    setIsLoadingUserData(true);
+    const userRef = dbRef(database, `users/${userId}`);
+
+    get(userRef)
+      .then((snapshot) => {
+        if (snapshot.exists()) {
+          const userData: UserData = snapshot.val();
+          // Load queue if it exists, otherwise fall back to videoUrl as single-item queue
+          if (userData.queue && userData.queue.length > 0) {
+            setQueue(userData.queue);
+          } else if (userData.videoUrl) {
+            setQueue([userData.videoUrl]);
+          } else {
+            setQueue([]);
+          }
+          setMessage(userData.message || '');
+        } else {
+          setQueue([]);
+          setMessage('');
+        }
+        setIsLoadingUserData(false);
+      })
+      .catch((error) => {
+        console.error('Error loading user data:', error);
+        setError('Failed to load user data.');
+        setIsLoadingUserData(false);
+      });
+  }, [userId]);
+
+  const handleAddVideo = () => {
+    if (!newVideoUrl.trim()) {
       setError('Please enter a YouTube URL.');
+      return;
+    }
+
+    // Validate YouTube URL
+    const videoId = getYouTubeId(newVideoUrl);
+    if (!videoId) {
+      setError('Invalid YouTube URL. Please enter a valid YouTube URL.');
+      return;
+    }
+
+    setError(null);
+    setQueue([...queue, newVideoUrl.trim()]);
+    setNewVideoUrl('');
+  };
+
+  const handleRemoveVideo = (index: number) => {
+    setQueue(queue.filter((_, i) => i !== index));
+  };
+
+  const handleMoveUp = (index: number) => {
+    if (index === 0) return;
+    const newQueue = [...queue];
+    [newQueue[index - 1], newQueue[index]] = [newQueue[index], newQueue[index - 1]];
+    setQueue(newQueue);
+  };
+
+  const handleMoveDown = (index: number) => {
+    if (index === queue.length - 1) return;
+    const newQueue = [...queue];
+    [newQueue[index], newQueue[index + 1]] = [newQueue[index + 1], newQueue[index]];
+    setQueue(newQueue);
+  };
+
+  const handleSave = async () => {
+    if (queue.length === 0) {
+      setError('Please add at least one video to the queue.');
       return;
     }
 
@@ -61,7 +157,7 @@ export default function UploadPage() {
         },
         body: JSON.stringify({
           userId,
-          videoUrl,
+          queue,
           message,
         }),
       });
@@ -71,12 +167,8 @@ export default function UploadPage() {
         throw new Error(errorData.error || 'Update failed');
       }
 
-      setSuccess(`Video updated successfully!`);
+      setSuccess(`Queue updated successfully!`);
       setIsUploading(false);
-
-      // Reset form
-      setVideoUrl('');
-      setMessage('');
 
       // Redirect after 2 seconds
       setTimeout(() => {
@@ -92,17 +184,17 @@ export default function UploadPage() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-4 md:p-8 bg-background">
-      <div className="w-full max-w-2xl">
+      <div className="w-full max-w-4xl">
         <div className="mb-8 text-center">
           <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-2">
-            Update Video
+            Video Queue Management
           </h1>
           <p className="text-muted-foreground">
-            Enter a YouTube URL to play for the user
+            Manage video queue for users
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6 bg-card p-6 rounded-lg border border-border shadow-lg">
+        <div className="space-y-6 bg-card p-6 rounded-lg border border-border shadow-lg">
           {/* User Selection */}
           <div>
             <label htmlFor="userId" className="block text-sm font-medium text-foreground mb-2">
@@ -117,6 +209,7 @@ export default function UploadPage() {
                 onChange={(e) => setUserId(e.target.value)}
                 className="w-full px-4 py-2 border border-border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                 required
+                disabled={isUploading}
               >
                 {availableUsers.length > 0 ? (
                   availableUsers.map((user) => (
@@ -131,25 +224,104 @@ export default function UploadPage() {
             )}
           </div>
 
-          {/* YouTube URL Input */}
-          <div>
-            <label htmlFor="videoUrl" className="block text-sm font-medium text-foreground mb-2">
-              YouTube URL
-            </label>
-            <input
-              type="text"
-              id="videoUrl"
-              value={videoUrl}
-              onChange={(e) => setVideoUrl(e.target.value)}
-              placeholder="https://www.youtube.com/watch?v=..."
-              className="w-full px-4 py-2 border border-border rounded-md bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-              required
-              disabled={isUploading}
-            />
+          {/* Add Video Section */}
+          <div className="border-t border-border pt-6">
+            <h2 className="text-xl font-semibold text-foreground mb-4">Add Video to Queue</h2>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newVideoUrl}
+                onChange={(e) => setNewVideoUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddVideo();
+                  }
+                }}
+                placeholder="https://www.youtube.com/watch?v=..."
+                className="flex-1 px-4 py-2 border border-border rounded-md bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                disabled={isUploading || isLoadingUserData}
+              />
+              <button
+                type="button"
+                onClick={handleAddVideo}
+                disabled={isUploading || isLoadingUserData || !newVideoUrl.trim()}
+                className="px-6 py-2 bg-primary text-primary-foreground font-semibold rounded-md hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+
+          {/* Queue Management Section */}
+          <div className="border-t border-border pt-6">
+            <h2 className="text-xl font-semibold text-foreground mb-4">
+              Video Queue ({queue.length} {queue.length === 1 ? 'video' : 'videos'})
+            </h2>
+            {isLoadingUserData ? (
+              <Skeleton className="h-32 w-full" />
+            ) : queue.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                No videos in queue. Add videos above to get started.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {queue.map((videoUrl, index) => {
+                  const videoId = getYouTubeId(videoUrl);
+                  const displayUrl = videoUrl.length > 60 ? `${videoUrl.substring(0, 60)}...` : videoUrl;
+                  return (
+                    <div
+                      key={index}
+                      className="flex items-center gap-2 p-3 bg-background border border-border rounded-md hover:bg-accent/50 transition-colors"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-foreground">
+                          {index + 1}. {displayUrl}
+                        </div>
+                        {videoId && (
+                          <div className="text-xs text-muted-foreground mt-1">
+                            Video ID: {videoId}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleMoveUp(index)}
+                          disabled={isUploading || index === 0}
+                          className="px-3 py-1 text-sm bg-secondary text-secondary-foreground rounded hover:bg-secondary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          title="Move up"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveDown(index)}
+                          disabled={isUploading || index === queue.length - 1}
+                          className="px-3 py-1 text-sm bg-secondary text-secondary-foreground rounded hover:bg-secondary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          title="Move down"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveVideo(index)}
+                          disabled={isUploading}
+                          className="px-3 py-1 text-sm bg-destructive text-destructive-foreground rounded hover:bg-destructive/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          title="Remove"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Message (Optional) */}
-          <div>
+          <div className="border-t border-border pt-6">
             <label htmlFor="message" className="block text-sm font-medium text-foreground mb-2">
               Message (Optional)
             </label>
@@ -178,13 +350,14 @@ export default function UploadPage() {
             </div>
           )}
 
-          {/* Submit Button */}
+          {/* Save Button */}
           <button
-            type="submit"
-            disabled={isUploading || !videoUrl}
+            type="button"
+            onClick={handleSave}
+            disabled={isUploading || isLoadingUserData || queue.length === 0}
             className="w-full px-6 py-3 bg-primary text-primary-foreground font-semibold rounded-md hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {isUploading ? 'Updating...' : 'Update Video'}
+            {isUploading ? 'Saving...' : 'Save Queue'}
           </button>
 
           {/* Navigation Buttons */}
@@ -204,7 +377,7 @@ export default function UploadPage() {
               Manage Users
             </button>
           </div>
-        </form>
+        </div>
       </div>
     </main>
   );
